@@ -1,3 +1,4 @@
+#pragma once
 #include <iterator>
 #include <memory>
 #include <type_traits>
@@ -7,10 +8,16 @@ class list {
   struct BaseNode {
     BaseNode* next;
     BaseNode* prev;
+
+    BaseNode() = default;
+    BaseNode(BaseNode* next, BaseNode* prev): next(next), prev(prev) {}
   };
 
   struct Node : BaseNode {
     T data;
+
+    template <typename... Args>
+    Node(BaseNode* next, BaseNode* prev, Args&&... args): BaseNode(next, prev), data(std::forward<Args>(args)...) {}
   };
   
 
@@ -21,14 +28,16 @@ class list {
     using reference_type = std::conditional_t<isConst, const T&, T&>;
     using pointer_type = std::conditional_t<isConst, const T*, T*>;
     using value_type = T;
-    using diffirence_type = std::ptrdiff_t;
+    using difference_type = std::ptrdiff_t;
     using iterator_category = std::bidirectional_iterator_tag;
   
   private:
-    BaseNode* ptr;
-    base_iterator(Node* ptr): ptr(ptr) {}
 
-    friend class list<T>;
+    BaseNode* ptr;
+    base_iterator(BaseNode* ptr): ptr(ptr) {}
+    base_iterator(const BaseNode* ptr): ptr(const_cast<BaseNode*>(ptr)) {}
+
+    friend class list<T, Alloc>;
   public:
     base_iterator() = default;
     base_iterator(const base_iterator&) = default;
@@ -65,9 +74,10 @@ class list {
     }
   };
 
-  void reverse_node(BaseNode* node);
-
   using node_allocator = typename std::allocator_traits<Alloc>::template rebind_alloc<Node>; 
+
+  void swap(list& other);
+
   BaseNode fakeNode_; // fakeNode_.next -> start of the list, fakeNode_.prev -> end of the list
   node_allocator alloc_; // allocator for Node
   size_t sz_;
@@ -84,31 +94,45 @@ public:
 
   iterator begin();
   iterator end();
+
   const_iterator begin() const;
   const_iterator end() const;
 
-  list(): fakeNode_{ &fakeNode_, &fakeNode_ }, sz_(0) {}
+  const_iterator cbegin() const;
+  const_iterator cend() const;
+
+  reverse_iterator rbegin();
+  reverse_iterator rend();
+
+  const_reverse_iterator rbegin() const;
+  const_reverse_iterator rend() const;
+
+  list(): fakeNode_{ &fakeNode_, &fakeNode_ }, alloc_(node_allocator()), sz_(0) {}
   list(size_t count, const T& value, const Alloc& allocator = Alloc());
   list(const list& other);
   list(const list& other, const Alloc& allocator);
   explicit list(const Alloc& other_alloc);
+  explicit list(size_t count, const Alloc& allocator = Alloc());
 
   ~list();
 
   list& operator=(const list& other);
 
   void push_back(const T& elem);
-  T pop_back();
+  void pop_back();
   
   void push_front(const T& elem);
-  T pop_front(); 
-  void erase(iterator iter); // TODO
+  void pop_front(); 
+  iterator erase(const_iterator iter);
 
-  void reverse(); // ?
+  void reverse();
 
-  const_iterator insert(const_iterator pos, const T& value);
+  const_iterator insert(const_iterator pos, const T& value = T());
+  template <typename... Args>
+  iterator emplace(const_iterator iter, Args&&... args);
 
   size_t size() const { return sz_; }
+  allocator_type get_allocator() const { return alloc_; }
 };
 
 template <typename T, typename Alloc>
@@ -123,8 +147,17 @@ list<T, Alloc>::list(size_t count, const T& value, const Alloc& allocator)
     : fakeNode_{ &fakeNode_, &fakeNode_ },
       alloc_(allocator),
       sz_(0) {
-  for(int i = 0; i < count; ++i) {
-    this->push_back(value);
+  
+  size_t count_of_nodes_;
+  try {
+    for (count_of_nodes_ = 0; count_of_nodes_ < count; ++count_of_nodes_) {
+      emplace(begin(), value);
+    }
+  } catch(...) {
+    for (size_t i = 0; i < count_of_nodes_; ++i) {
+      pop_back();
+    }
+    throw;
   }
 }
 
@@ -133,51 +166,90 @@ list<T, Alloc>::list(const list& other, const Alloc& allocator)
               : fakeNode_{ &fakeNode_, &fakeNode_ },
                 alloc_(allocator),
                 sz_(0) {
-  for(const auto& elem : other) {
-    this->push_back(elem);
+  size_t count_of_nodes_ = 0;
+  try {
+    for(const auto& elem : other) {
+      emplace(begin(), elem);
+      count_of_nodes_++;
+    }
+  } catch(...) {
+    for (size_t i = 0; i < count_of_nodes_; ++i) {
+      pop_back();
+    }
+    throw;
   }
 }
 
 template <typename T, typename Alloc>
-list<T, Alloc>::list(const list<T, Alloc>& other)
+list<T, Alloc>::list(const list& other)
               : fakeNode_{ &fakeNode_, &fakeNode_ },
                 alloc_(std::allocator_traits<node_allocator>
-                          ::select_on_container_copy_construction(other.alloc_)),
-                sz_(0)
-{
-  for (const auto& elem : other) {
-    this->push_back(elem);
+                          ::select_on_container_copy_construction(other.get_allocator())),
+                sz_(0) {
+  size_t count_of_nodes_ = 0;
+  try {
+    for (const auto& elem : other) {
+      emplace(end(), elem);
+      count_of_nodes_++;
+    }
+  } catch(...) {
+    for (size_t i = 0; i < count_of_nodes_; ++i) {
+      pop_back();
+    }
+    throw;
+  }
+}
+
+template <typename T, typename Alloc>
+list<T, Alloc>::list(size_t count, const Alloc& allocator)
+              : fakeNode_{ &fakeNode_, &fakeNode_ },
+                alloc_(allocator), 
+                sz_(0) {
+  size_t count_of_nodes_;
+  try {
+    for (count_of_nodes_ = 0; count_of_nodes_ < count; count_of_nodes_++) {
+      emplace(begin());
+    }
+  } catch(...) {
+    for (size_t i = 0; i < count_of_nodes_; ++i) {
+      pop_back();
+    }
+    throw;
   }
 }
 
 template <typename T, typename Alloc>
 list<T, Alloc>::~list() {
-  Node* current_node = static_cast<Node*>(fakeNode_.next);
-  Node* next_node = current_node;
-  while (current_node->next != &fakeNode_) {
-    next_node = static_cast<Node*>(current_node->next);
-    std::allocator_traits<node_allocator>::destroy(alloc_, current_node);
-    std::allocator_traits<node_allocator>::deallocate(alloc_, current_node, 1);
-    current_node = next_node;
+  size_t old_sz_ = sz_;
+  for (size_t i = 0; i < old_sz_; ++i) {
+    pop_back();
   }
-  std::allocator_traits<node_allocator>::destroy(alloc_, current_node);
-  std::allocator_traits<node_allocator>::deallocate(alloc_, current_node, 1);
+}
+
+template<typename T, typename Alloc>
+list<T, Alloc>& list<T, Alloc>::operator=(const list& other) {
+  list<T, Alloc> temp_list(other, other.alloc_);
+  swap(temp_list);
+  return *this;
 }
 
 template <typename T, typename Alloc>
 void list<T, Alloc>::push_back(const T& elem) {
   Node* new_node = std::allocator_traits<node_allocator>::allocate(alloc_, 1);
-  new_node->data = elem;
+  try {
+    std::allocator_traits<node_allocator>::construct(alloc_, new_node, &fakeNode_, nullptr, elem);
+  } catch(...) {
+    std::allocator_traits<node_allocator>::deallocate(alloc_, new_node, 1);
+    throw;
+  }
 
   if (sz_ == 0) {
     fakeNode_.next = new_node;
     fakeNode_.prev = new_node;
-    new_node->next = &fakeNode_;
   } else {
     fakeNode_.prev->next = new_node;
     new_node->prev = fakeNode_.prev;
     fakeNode_.prev = new_node;
-    new_node->next = &fakeNode_;
   }
   ++sz_;
 }
@@ -185,7 +257,12 @@ void list<T, Alloc>::push_back(const T& elem) {
 template <typename T, typename Alloc>
 void list<T, Alloc>::push_front(const T& elem) {
   Node* new_node = std::allocator_traits<node_allocator>::allocate(alloc_, 1);
-  new_node->data = elem;
+  try {
+    std::allocator_traits<node_allocator>::construct(alloc_, new_node, nullptr, nullptr, elem);
+  } catch(...) {
+    std::allocator_traits<node_allocator>::deallocate(alloc_, new_node, 1);
+    throw;
+  }
 
   if (sz_ == 0) {
     fakeNode_.next = new_node;
@@ -200,8 +277,7 @@ void list<T, Alloc>::push_front(const T& elem) {
 }
 
 template <typename T, typename Alloc>
-T list<T, Alloc>::pop_back() {
-  T result = static_cast<Node*>(fakeNode_.prev)->data;
+void list<T, Alloc>::pop_back() {
 
   Node* prev_before_last_elem = static_cast<Node*>(fakeNode_.prev->prev);
   std::allocator_traits<node_allocator>::destroy(alloc_, static_cast<Node*>(fakeNode_.prev));
@@ -216,16 +292,14 @@ T list<T, Alloc>::pop_back() {
   }
 
   sz_--;
-  return result;
 }
 
 template <typename T, typename Alloc>
-T list<T, Alloc>::pop_front() {
-  T result = static_cast<Node*>(fakeNode_.next)->data;
+void list<T, Alloc>::pop_front() {
 
   Node* second_element = static_cast<Node*>(fakeNode_.next->next);
   std::allocator_traits<node_allocator>::destroy(alloc_, static_cast<Node*>(fakeNode_.next));
-  std::allocator_traits<node_allocator>::deallocate(alloc_, static_cast<Node*>(fakeNode_.next));
+  std::allocator_traits<node_allocator>::deallocate(alloc_, static_cast<Node*>(fakeNode_.next), 1);
   
   if (sz_ == 1) {
     fakeNode_.next = &fakeNode_;
@@ -236,60 +310,93 @@ T list<T, Alloc>::pop_front() {
   }
 
   sz_--;
-  return result;
 }
 
-// TODO
 template <typename T, typename Alloc>
-void list<T, Alloc>::erase(typename list<T, Alloc>::iterator iter) {
-  
+auto list<T, Alloc>::erase(typename list<T, Alloc>::const_iterator iter) 
+          -> typename list<T, Alloc>::iterator {
+  if (iter == this->cend()) {
+    return this->end();
+  }
+
   if (iter.ptr->prev != nullptr) {
     iter.ptr->prev->next = iter.ptr->next;
     iter.ptr->next->prev = iter.ptr->prev;
   } else {
-   this->fakeNode_.next = iter.ptr->next;
+   fakeNode_.next = iter.ptr->next;
    iter.ptr->next->prev = nullptr;
   }
+
+  iterator result = iter.ptr->next;
   std::allocator_traits<node_allocator>::destroy(alloc_, static_cast<Node*>(iter.ptr));
   std::allocator_traits<node_allocator>::deallocate(alloc_, static_cast<Node*>(iter.ptr), 1);
 
   sz_--;
+  return result;
 }
 
 template <typename T, typename Alloc>
-void list<T, Alloc>::reverse() {
-  Node* current_node = fakeNode_.next;
-  while (current_node != &fakeNode_) {
-    reverse_node(current_node);
-    current_node = current_node->prev; // prev because node already reversed
+template <typename... Args>
+auto list<T, Alloc>::emplace(list<T, Alloc>::const_iterator iter, Args&&... args) 
+                   -> list<T, Alloc>::iterator{
+  Node* new_node = std::allocator_traits<node_allocator>::allocate(alloc_, 1);
+  try {
+    std::allocator_traits<node_allocator>::construct(alloc_, new_node, iter.ptr, nullptr, std::forward<Args>(args)...);
+  } catch(...) {
+    std::allocator_traits<node_allocator>::deallocate(alloc_, new_node, 1);
+    throw;
   }
 
-  reverse_node(fakeNode_);
-}
+  if (sz_ == 0) {
+    fakeNode_.next = new_node;
+    fakeNode_.prev = new_node;
+  } else if (iter.ptr->prev == nullptr) {
+    iter.ptr->prev = new_node;
+    fakeNode_.next = new_node;
+  } else {
+    iter.ptr->prev->next = new_node;
+    new_node->prev = iter.ptr->prev;
+    iter.ptr->prev = new_node;
+  }
 
-template <typename T, typename Alloc>
-void list<T, Alloc>::reverse_node(BaseNode* node) {
-  BaseNode* prev_node = node->prev;
-  node->prev = node->next;
-  node->next = prev_node;
+  sz_++;
+
+  return { new_node };
 }
 
 template <typename T, typename Alloc>
 auto list<T, Alloc>::insert(const_iterator pos, const T& value)
                             -> list<T, Alloc>::const_iterator {
   Node* new_node = std::allocator_traits<node_allocator>::allocate(alloc_, 1);
-  new_node->data = value;
-
-  new_node->next = pos;
-  new_node->prev = pos->prev;
+  try {
+    std::allocator_traits<node_allocator>::construct(alloc_, new_node, pos.ptr, pos.ptr->prev, value);
+  } catch(...) {
+    std::allocator_traits<node_allocator>::deallocate(alloc_, new_node, 1);
+    throw;
+  }
 
   if (new_node->prev != nullptr) {
-    pos->prev->next = new_node;
+    pos.ptr->prev->next = new_node;
   }
-  pos->prev = new_node;
+
+  pos.ptr->prev = new_node;
+
+  sz_++;
+
   return { new_node };
 }
 
+template <typename T, typename Alloc>
+void list<T, Alloc>::swap(list<T, Alloc>& other) {
+  using std::swap;
+  swap(fakeNode_, other.fakeNode_);
+  swap(sz_, other.sz_);
+  if (std::allocator_traits<node_allocator>::propagate_on_container_copy_assignment::value) {
+    swap(alloc_, other.alloc_);
+  }
+}
+
+// BEGIN
 template <typename T, typename Alloc>
 auto list<T, Alloc>::begin()
           -> typename list<T, Alloc>::iterator {
@@ -297,19 +404,59 @@ auto list<T, Alloc>::begin()
 }
 
 template <typename T, typename Alloc>
-auto list<T, Alloc>::begin() const
+auto list<T, Alloc>::begin() const 
           -> typename list<T, Alloc>::const_iterator {
   return { fakeNode_.next };
 }
 
 template <typename T, typename Alloc>
+auto list<T, Alloc>::cbegin() const
+          -> typename list<T, Alloc>::const_iterator {
+  return { fakeNode_.next };
+}
+
+
+// END
+template <typename T, typename Alloc>
 auto list<T, Alloc>::end()
           -> typename list<T, Alloc>::iterator {
-  return { static_cast<Node*>(&fakeNode_) };
+  return { &fakeNode_ };
 }
 
 template <typename T, typename Alloc>
-auto list<T, Alloc>::end() const
+auto list<T, Alloc>::end() const 
           -> typename list<T, Alloc>::const_iterator {
   return { &fakeNode_ };
+}
+
+template <typename T, typename Alloc>
+auto list<T, Alloc>::cend() const
+          -> typename list<T, Alloc>::const_iterator {
+  return { &fakeNode_ };
+}
+
+// RBEGIN
+template <typename T, typename Alloc>
+auto list<T, Alloc>::rbegin() 
+          -> typename list<T, Alloc>::reverse_iterator {
+  return std::reverse_iterator(this->end());
+}
+
+template <typename T, typename Alloc>
+auto list<T, Alloc>::rbegin() const
+          -> typename list<T, Alloc>::const_reverse_iterator {
+  return std::reverse_iterator(this->cend());
+}
+
+//REND
+template <typename T, typename Alloc>
+auto list<T, Alloc>::rend() -> 
+          typename list<T, Alloc>::reverse_iterator {
+  return std::reverse_iterator(this->begin());
+}
+
+template <typename T, typename Alloc>
+auto list<T, Alloc>::rend() const -> 
+          typename list<T, Alloc>::const_reverse_iterator {
+  return std::reverse_iterator(this->cbegin());
 }
